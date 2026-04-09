@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Tweet Exporter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+          <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+        </svg>
+        <div>
+          <h1>Tweet Exporter</h1>
+          <p class="subtitle">Export tweets to CSV — zero servers</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- Username Input (SPEC section 4: no '@' needed) -->
+    <section class="input-group">
+      <label for="username">
+        <span class="label-icon">@</span>
+        Username
+      </label>
+      <input
+        type="text"
+        id="username"
+        placeholder="elonmusk"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </section>
+
+    <!-- Date Range (SPEC section 4: defaults to last 6 months) -->
+    <section class="input-group date-range">
+      <div class="date-field">
+        <label for="date-from">From</label>
+        <input type="date" id="date-from" />
+      </div>
+      <div class="date-separator">→</div>
+      <div class="date-field">
+        <label for="date-to">To</label>
+        <input type="date" id="date-to" />
+      </div>
+    </section>
+
+    <!-- Toggles/Options (SPEC section 4) -->
+    <section class="options">
+      <label class="toggle" for="include-replies">
+        <input type="checkbox" id="include-replies" />
+        <span class="toggle-switch"></span>
+        <span class="toggle-label">Include replies</span>
+      </label>
+      <label class="toggle" for="only-media">
+        <input type="checkbox" id="only-media" />
+        <span class="toggle-switch"></span>
+        <span class="toggle-label">Only with media</span>
+      </label>
+      <button id="btn-export-all" class="btn btn-ghost" type="button">
+        ⚡ Export everything available
+      </button>
+    </section>
+
+    <!-- Action Buttons (SPEC section 4) -->
+    <section class="actions">
+      <button id="btn-start" class="btn btn-start" type="button">
+        <span class="btn-icon">▶</span>
+        Start Export
+      </button>
+      <button id="btn-stop" class="btn btn-stop" type="button" disabled>
+        <span class="btn-icon">■</span>
+        Stop
+      </button>
+    </section>
+
+    <!-- Progress Feedback (SPEC section 4: live progress bar + tweet counter) -->
+    <section class="progress-section" id="progress-section">
+      <div class="progress-header">
+        <span class="progress-status" id="progress-status">Extracting…</span>
+        <span class="progress-percent" id="progress-percent">0%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-bar"></div>
+        <div class="progress-bar-glow" id="progress-bar-glow"></div>
+      </div>
+      <p class="progress-text" id="progress-text">Extracted 0 / ~10,000</p>
+    </section>
+
+    <!-- Status / Error Messages -->
+    <div class="status-message" id="status-message"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
