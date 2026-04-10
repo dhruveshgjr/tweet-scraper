@@ -20,12 +20,14 @@ var sessionState = {
   dateTo: null,
   includeReplies: false,
   onlyMedia: false,
+  includeReposts: true,
   exportAll: false,
   tweets: [],
   totalCaptured: 0,
   estimatedTotal: 10000,
   activeTabId: null,
-  lastDownloadId: null
+  lastDownloadId: null,
+  downloadTriggered: false
 };
 
 // ── Message Router ───────────────────────────────────
@@ -93,11 +95,13 @@ function handleStartExport(config, sendResponse) {
   sessionState.dateTo = config.dateTo;
   sessionState.includeReplies = config.includeReplies;
   sessionState.onlyMedia = config.onlyMedia;
+  sessionState.includeReposts = config.includeReposts;
   sessionState.exportAll = config.exportAll;
   sessionState.tweets = [];
   sessionState.totalCaptured = 0;
   sessionState.estimatedTotal = 10000;
   sessionState.lastDownloadId = null;
+  sessionState.downloadTriggered = false;
 
   console.log('[ServiceWorker] Export started for @' + config.username, config);
 
@@ -122,9 +126,7 @@ function handleStopExport(sendResponse) {
     totalCaptured: sessionState.totalCaptured
   });
 
-  if (sessionState.tweets.length > 0) {
-    triggerCSVDownload();
-  }
+  triggerCSVDownload();
 
   sendResponse({ status: 'stopped', totalCaptured: sessionState.totalCaptured });
 }
@@ -141,6 +143,7 @@ function handleResumeExport(sendResponse) {
   sessionState.isPaused = false;
   sessionState.isRunning = true;
   sessionState.stopReason = '';
+  sessionState.downloadTriggered = false;
 
   if (sessionState.activeTabId) {
     chrome.tabs.sendMessage(sessionState.activeTabId, { type: 'resume-scraping' }).catch(function () {});
@@ -195,7 +198,9 @@ function handleScrapeComplete(reason) {
   sessionState.isPaused = false;
   sessionState.stopReason = reason || 'complete';
 
-  triggerCSVDownload();
+  if (!sessionState.downloadTriggered) {
+    triggerCSVDownload();
+  }
 
   broadcastToPopup({
     type: 'EXPORT_COMPLETE',
@@ -245,6 +250,7 @@ async function startExtraction(config) {
         dateFrom: config.dateFrom,
         dateTo: config.dateTo,
         includeReplies: config.includeReplies,
+        includeReposts: config.includeReposts,
         onlyMedia: config.onlyMedia
       }
     });
@@ -311,6 +317,12 @@ function sleep(ms) {
 // ── CSV Download ─────────────────────────────────────
 
 function triggerCSVDownload() {
+  if (sessionState.downloadTriggered) {
+    console.log('[ServiceWorker] CSV download already triggered — skipping duplicate');
+    return;
+  }
+  sessionState.downloadTriggered = true;
+
   if (sessionState.tweets.length === 0) {
     console.warn('[ServiceWorker] No tweets to export');
     broadcastToPopup({ type: 'EXPORT_COMPLETE', reason: 'no_data', totalCaptured: 0 });
@@ -373,6 +385,7 @@ function saveLastConfig(config) {
         dateFrom: config.dateFrom,
         dateTo: config.dateTo,
         includeReplies: config.includeReplies,
+        includeReposts: config.includeReposts,
         onlyMedia: config.onlyMedia,
         exportAll: config.exportAll
       }

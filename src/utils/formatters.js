@@ -179,18 +179,54 @@ function parseTweet(article) {
 
   // ── is_retweet ─────────────────────────────────────
   var isRetweet = false;
+  var repostAuthor = '';
+
+  // Primary: socialContext data-testid (X 2025+ repost header)
   var socialCtx = article.querySelector('[data-testid="socialContext"]');
   if (socialCtx) {
-    var ctxText = socialCtx.textContent || '';
-    isRetweet = ctxText.indexOf('Reposted') !== -1 || ctxText.indexOf('Retweeted') !== -1;
+    var ctxText = (socialCtx.textContent || '').trim().toLowerCase();
+    if (ctxText.indexOf('reposted') !== -1 || ctxText.indexOf('retweeted') !== -1) {
+      isRetweet = true;
+      // Try to extract the reposter context — "User Reposted"
+      var repostLink = socialCtx.querySelector('a[href^="/"]');
+      if (repostLink) {
+        repostAuthor = (repostLink.getAttribute('href') || '').replace(/^\//, '');
+      } else {
+        var words = ctxText.split(' ');
+        if (words.length > 0) repostAuthor = words[0];
+      }
+    }
   }
+
+  // Fallback 1: Check parent/sibling elements for repost label outside the article
   if (!isRetweet && article.parentElement) {
     var parent = article.parentElement;
     var children = parent.children;
     for (var k = 0; k < children.length; k++) {
       if (children[k] === article) continue;
-      var sibText = children[k].textContent || '';
-      if (sibText.indexOf('Reposted') !== -1 || sibText.indexOf('Retweeted') !== -1) {
+      var sibText = (children[k].textContent || '').trim().toLowerCase();
+      if (sibText.indexOf('reposted') !== -1 || sibText.indexOf('retweeted') !== -1) {
+        isRetweet = true;
+        var sibLink = children[k].querySelector('a[href^="/"]');
+        if (sibLink) {
+          repostAuthor = (sibLink.getAttribute('href') || '').replace(/^\//, '');
+        }
+        break;
+      }
+    }
+  }
+
+  // Fallback 2: Check for "Reposted" spans within the article itself
+  if (!isRetweet) {
+    var allSpans = article.querySelectorAll('span');
+    for (var si = 0; si < allSpans.length; si++) {
+      var spanText = (allSpans[si].textContent || '').trim().toLowerCase();
+      // X uses "You Reposted" or "Username Reposted" in a small header span
+      if (spanText === 'reposted' || spanText === 'retweeted' ||
+          spanText.indexOf(' reposted') !== -1 || spanText.indexOf(' retweeted') !== -1) {
+        // Make sure this isn't the engagement count button text
+        var spanParent = allSpans[si].closest('[data-testid="retweet"]');
+        if (spanParent) continue;
         isRetweet = true;
         break;
       }
@@ -199,13 +235,44 @@ function parseTweet(article) {
 
   // ── quoted_tweet_id ────────────────────────────────
   var quotedTweetId = '';
+  // Primary: data-testid="quoteTweet" container
   var quoteEl = article.querySelector('[data-testid="quoteTweet"]');
+  
+  // Fallback: look for generic link wrappers that contain status urls but not the main tweet
   if (!quoteEl) {
-    quoteEl = article.querySelector('div[role="link"][href*="/status/"]');
+    var links = article.querySelectorAll('div[role="link"]:not([data-testid="tweet"])');
+    for (var li = 0; li < links.length; li++) {
+      var hrefNode = links[li].querySelector('a[href*="/status/"]');
+      if (hrefNode) {
+        var hrefStr = hrefNode.getAttribute('href') || '';
+        if (hrefStr.indexOf('/photo/') !== -1 || hrefStr.indexOf('/video/') !== -1) continue;
+        var qmFallback = hrefStr.match(/\/status\/(\d+)/);
+        if (qmFallback && qmFallback[1] !== tweetId) {
+          quoteEl = links[li];
+          break;
+        }
+      }
+    }
   }
+
+  // Final fallback
+  if (!quoteEl) {
+    var allQuoteLinks = article.querySelectorAll('a[href*="/status/"]');
+    for (var qi = 0; qi < allQuoteLinks.length; qi++) {
+      var qaHref = allQuoteLinks[qi].getAttribute('href') || allQuoteLinks[qi].href || '';
+      // Skip the tweet's own permalink, analytics, media
+      if (qaHref.indexOf('analytics') !== -1 || qaHref.indexOf('/photo/') !== -1 || qaHref.indexOf('/video/') !== -1) continue;
+      var qm = qaHref.match(/\/status\/(\d+)/);
+      if (qm && qm[1] !== tweetId) {
+        quoteEl = allQuoteLinks[qi];
+        break;
+      }
+    }
+  }
+  
   if (quoteEl) {
-    var qLink = quoteEl.querySelector('a[href*="/status/"]') || quoteEl;
-    var qHref = qLink.getAttribute('href') || qLink.href || '';
+    var qLink = quoteEl.tagName === 'A' ? quoteEl : (quoteEl.querySelector('a[href*="/status/"]') || quoteEl);
+    var qHref = qLink ? (qLink.getAttribute('href') || qLink.href || '') : '';
     var qMatch = qHref.match(/\/status\/(\d+)/);
     if (qMatch) quotedTweetId = qMatch[1];
   }
@@ -238,6 +305,7 @@ function parseTweet(article) {
     view_count: viewCount,
     is_reply: isReply,
     is_retweet: isRetweet,
+    repost_author: repostAuthor,
     quoted_tweet_id: quotedTweetId,
     media_urls: mediaUrls.join(','),
     tweet_url: tweetUrl,

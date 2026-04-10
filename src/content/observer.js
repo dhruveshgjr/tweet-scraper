@@ -5,8 +5,18 @@
  *
  * Runs as a content script on x.com / twitter.com.
  * Loaded AFTER formatters.js, BEFORE scraper.js.
- * Sets window.__tweetObserverNewCount and window.__newTweetsAvailable
- * for scraper.js to read on each loop tick.
+ *
+ * Exposes for scraper.js:
+ *   window.__newTweetsAvailable   — set true when new articles appear
+ *   window.__tweetObserverNewCount — count of new articles since last reset
+ *   window.__lastNewTweetTimestamp — epoch ms of newest article's time
+ *   window.__tweetsInDOM          — live count of all tweet articles in DOM
+ *
+ * Phase 2 ready: GraphQL layer...
+ * To intercept GraphQL on Manifest V3, we inject a <script> into the absolute DOM 
+ * to hook `window.fetch` or `XMLHttpRequest`, parse the 'UserTweets'/'SearchTimeline' 
+ * endpoints, and pass the JSON out to this content script via window.postMessage.
+ * window.__graphqlTweets is exposed to scraper.js.
  */
 
 // ── Observer Instance ────────────────────────────────
@@ -16,6 +26,11 @@ var observedTweetCount = 0;
 // ── Expose state for scraper.js ──────────────────────
 window.__tweetObserverNewCount = 0;
 window.__newTweetsAvailable = false;
+window.__lastNewTweetTimestamp = 0;
+window.__tweetsInDOM = 0;
+
+// Phase 2: Reserved for GraphQL interception data
+// window.__graphqlTweets = [];
 
 // ── Find the timeline container ──────────────────────
 
@@ -43,6 +58,39 @@ function findTimelineContainer() {
   return document.body;
 }
 
+// ── Update live tweet count ─────────────────────────────
+
+function updateLiveTweetCount() {
+  window.__tweetsInDOM = document.querySelectorAll('article[data-testid="tweet"]').length;
+}
+
+// ── Check if a node contains a real tweet article ──────
+
+function nodeContainsTweetArticle(node) {
+  if (node.nodeType !== 1) return false;
+
+  if (node.getAttribute && node.getAttribute('data-testid') === 'tweet' && node.tagName === 'ARTICLE') {
+    return true;
+  }
+
+  if (node.querySelector) {
+    return !!node.querySelector('article[data-testid="tweet"]');
+  }
+
+  return false;
+}
+
+// ── Extract timestamp from a tweet article ──────────────
+
+function extractArticleTimestamp(articleEl) {
+  var timeEl = articleEl.querySelector('time[datetime]');
+  if (!timeEl) return null;
+  var dt = timeEl.getAttribute('datetime');
+  if (!dt) return null;
+  var d = new Date(dt);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+
 // ── Setup Observer ───────────────────────────────────
 
 function initTweetObserver() {
@@ -57,25 +105,48 @@ function initTweetObserver() {
 
   console.log('[Observer] Watching timeline container');
 
+  updateLiveTweetCount();
+
   tweetObserver = new MutationObserver(function (mutations) {
+    var sawNewTweet = false;
+
     for (var m = 0; m < mutations.length; m++) {
       var added = mutations[m].addedNodes;
       if (!added) continue;
+
       for (var n = 0; n < added.length; n++) {
         var node = added[n];
-        if (node.nodeType !== 1) continue;
-        if (node.querySelector && node.querySelector('[data-testid="tweet"]')) {
-          observedTweetCount++;
-          window.__tweetObserverNewCount++;
-          window.__newTweetsAvailable = true;
+
+        if (!nodeContainsTweetArticle(node)) continue;
+
+        var articles = [];
+        if (node.tagName === 'ARTICLE' && node.getAttribute('data-testid') === 'tweet') {
+          articles.push(node);
+        } else if (node.querySelector) {
+          var found = node.querySelectorAll('article[data-testid="tweet"]');
+          for (var a = 0; a < found.length; a++) {
+            articles.push(found[a]);
+          }
         }
-        if (node.getAttribute && node.getAttribute('data-testid') === 'tweet') {
+
+        for (var ai = 0; ai < articles.length; ai++) {
           observedTweetCount++;
           window.__tweetObserverNewCount++;
-          window.__newTweetsAvailable = true;
+          sawNewTweet = true;
+
+          var ts = extractArticleTimestamp(articles[ai]);
+          if (ts !== null) {
+            window.__lastNewTweetTimestamp = ts;
+          }
         }
       }
     }
+
+    if (sawNewTweet) {
+      window.__newTweetsAvailable = true;
+    }
+
+    updateLiveTweetCount();
   });
 
   tweetObserver.observe(container, { childList: true, subtree: true });
@@ -91,6 +162,8 @@ function disconnectTweetObserver() {
   observedTweetCount = 0;
   window.__tweetObserverNewCount = 0;
   window.__newTweetsAvailable = false;
+  window.__lastNewTweetTimestamp = 0;
+  updateLiveTweetCount();
 }
 
 // ── Message Listener ─────────────────────────────────

@@ -18,6 +18,7 @@ const dateFromInput   = document.getElementById('date-from');
 const dateToInput     = document.getElementById('date-to');
 const includeReplies  = document.getElementById('include-replies');
 const onlyMedia       = document.getElementById('only-media');
+const includeReposts  = document.getElementById('include-reposts');
 const btnExportAll    = document.getElementById('btn-export-all');
 const btnStart        = document.getElementById('btn-start');
 const btnStop         = document.getElementById('btn-stop');
@@ -88,6 +89,7 @@ function setRunningState(running) {
     btnResume.disabled = true;
     progressSection.classList.add('visible');
     progressStatus.textContent = 'Extracting…';
+    lastDownloadId = null;
     btnOpenCSV.style.display = 'none';
     actionsResume.style.display = 'none';
     clearStatus();
@@ -156,6 +158,7 @@ function buildConfig() {
     dateTo: dateToInput.value,
     includeReplies: includeReplies.checked,
     onlyMedia: onlyMedia.checked,
+    includeReposts: includeReposts.checked,
     exportAll: btnExportAll.classList.contains('active')
   };
 }
@@ -257,10 +260,12 @@ btnExportAll.addEventListener('click', () => {
     dateFromInput.value = '2006-03-21';
     dateToInput.value = new Date().toISOString().split('T')[0];
     includeReplies.checked = true;
+    includeReposts.checked = true;
     showStatus('Will export all available tweets', 'info');
   } else {
     setDefaultDates();
     includeReplies.checked = false;
+    includeReposts.checked = true;
     clearStatus();
   }
 });
@@ -301,7 +306,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       showStatus(statusText, statusType);
 
-      if (message.totalCaptured > 0) {
+      if (captured > 0 && !lastDownloadId) {
         btnOpenCSV.style.display = 'flex';
       }
       break;
@@ -356,8 +361,9 @@ function initPopup() {
       if (cfg.username) usernameInput.value = cfg.username;
       if (cfg.dateFrom) dateFromInput.value = cfg.dateFrom;
       if (cfg.dateTo) dateToInput.value = cfg.dateTo;
-      if (cfg.includeReplies) includeReplies.checked = true;
-      if (cfg.onlyMedia) onlyMedia.checked = true;
+if (cfg.includeReplies) includeReplies.checked = true;
+        if (cfg.includeReposts === false) includeReposts.checked = false;
+        if (cfg.onlyMedia) onlyMedia.checked = true;
       if (cfg.exportAll) {
         btnExportAll.classList.add('active');
       }

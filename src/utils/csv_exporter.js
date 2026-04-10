@@ -17,6 +17,7 @@ var CSV_COLUMNS = [
   'view_count',
   'is_reply',
   'is_retweet',
+  'repost_author',
   'quoted_tweet_id',
   'media_urls',
   'tweet_url',
