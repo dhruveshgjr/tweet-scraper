@@ -21,6 +21,9 @@ var scrollStallCount = 0;
 var lastScrollHeight = 0;
 var config = {};
 var stopRequested = false;
+var reachedDateRange = false;
+var totalInRange = 0;
+var MAX_TWEETS = 10000;
 
 var BATCH_SIZE = 15;
 var SCROLL_MIN_DELAY = 800;
@@ -78,13 +81,15 @@ async function startScrapeLoop() {
   isExtracting = true;
   isPaused = false;
   stopRequested = false;
+  reachedDateRange = false;
   extractedTweetIds = {};
   extractedTweets = [];
   batchBuffer = [];
   scrollStallCount = 0;
   lastScrollHeight = 0;
+  totalInRange = 0;
 
-  console.log('[Scraper] Starting extraction for @' + (config.username || 'unknown'));
+  console.log('[Scraper] Starting extraction for @' + (config.username || 'unknown') + ' | dateFrom=' + config.dateFrom + ' dateTo=' + config.dateTo);
 
   // Scroll to top first to ensure we start from the newest tweets
   window.scrollTo(0, 0);
@@ -100,19 +105,36 @@ async function startScrapeLoop() {
     // 1. Extract new tweets from the current DOM
     var newTweets = extractTweetsFromDOM();
 
-    // 2. Add to batch buffer
-    if (newTweets.length > 0) {
-      batchBuffer = batchBuffer.concat(newTweets);
+    // 2. Filter by date range & detect early-stop boundary
+    var inRangeTweets = [];
+    for (var ti = 0; ti < newTweets.length; ti++) {
+      var t = newTweets[ti];
+
+      if (config.dateTo && isNewerThan(t.timestamp, config.dateTo)) continue;
+
+      if (config.dateFrom && t.timestamp && isOlderThan(t.timestamp, config.dateFrom)) {
+        console.log('[Scraper] Reached date range limit → tweet ' + t.tweet_id + ' @ ' + t.timestamp + ' is older than ' + config.dateFrom);
+        reachedDateRange = true;
+        break;
+      }
+
+      inRangeTweets.push(t);
+    }
+
+    // 3. Add in-range tweets to batch buffer
+    if (inRangeTweets.length > 0) {
+      batchBuffer = batchBuffer.concat(inRangeTweets);
+      totalInRange += inRangeTweets.length;
       scrollStallCount = 0;
     }
 
-    // 3. Send batch if threshold reached
+    // 4. Send batch if threshold reached
     if (batchBuffer.length >= BATCH_SIZE) {
       sendBatchToBackground(batchBuffer);
       batchBuffer = [];
     }
 
-    // 4. Check for rate limit / CAPTCHA
+    // 5. Check for rate limit / CAPTCHA
     if (detectRateLimitOrCaptcha()) {
       console.warn('[Scraper] Rate limit or CAPTCHA detected — stopping');
       isExtracting = false;
@@ -120,33 +142,39 @@ async function startScrapeLoop() {
       break;
     }
 
-    // 5. Check end-of-feed
+    // 6. Check end-of-feed
     if (isEndOfFeed()) {
       console.log('[Scraper] End of feed reached');
       break;
     }
 
-    // 6. Check if we've gone past the date range (tweets are newest-first)
-    if (config.dateFrom && newTweets.length > 0) {
-      var oldestNew = newTweets[newTweets.length - 1];
-      if (isOlderThan(oldestNew.timestamp, config.dateFrom)) {
-        console.log('[Scraper] Reached dateFrom limit — stopping');
-        // Flush remaining buffer
-        if (batchBuffer.length > 0) {
-          sendBatchToBackground(batchBuffer);
-          batchBuffer = [];
-        }
-        break;
+    // 7. Date range early-stop: flush remaining buffer and stop
+    if (reachedDateRange) {
+      console.log('[Scraper] Reached date range limit — stopping');
+      if (batchBuffer.length > 0) {
+        sendBatchToBackground(batchBuffer);
+        batchBuffer = [];
       }
+      break;
     }
 
-    // 7. Auto-scroll
+    // 8. Hard cap: 10,000 tweets max
+    if (totalInRange >= MAX_TWEETS) {
+      console.log('[Scraper] Reached 10,000 tweet hard cap — stopping');
+      if (batchBuffer.length > 0) {
+        sendBatchToBackground(batchBuffer);
+        batchBuffer = [];
+      }
+      break;
+    }
+
+// 9. Auto-scroll
     await autoScroll();
 
-    // 8. Wait for new content to load
+    // 10. Wait for new content to load
     await sleep(randomDelay());
 
-    // 9. Stall detection
+    // 11. Stall detection
     var currentHeight = document.body.scrollHeight;
     if (currentHeight === lastScrollHeight) {
       scrollStallCount++;
@@ -169,12 +197,12 @@ async function startScrapeLoop() {
 
   isExtracting = false;
 
-  // Notify background that scraping is complete
-  chrome.runtime.sendMessage({ type: 'SCRAPE_COMPLETE' }, function () {
-    // Ignore errors if background is not ready
+  var stopReason = reachedDateRange ? 'date_range' : (totalInRange >= MAX_TWEETS ? 'hard_cap' : 'end_of_feed');
+
+  chrome.runtime.sendMessage({ type: 'SCRAPE_COMPLETE', reason: stopReason, totalInRange: totalInRange }, function () {
   });
 
-  console.log('[Scraper] Extraction complete. Total unique tweets:', extractedTweets.length);
+  console.log('[Scraper] Extraction complete. In-range tweets:', totalInRange, '| Total unique seen:', extractedTweets.length);
 }
 
 // ── Tweet Extraction ─────────────────────────────────
@@ -191,10 +219,6 @@ function extractTweetsFromDOM() {
     // De-duplicate
     if (extractedTweetIds[tweet.tweet_id]) continue;
     extractedTweetIds[tweet.tweet_id] = true;
-
-    // Client-side date filtering
-    if (config.dateTo && isNewerThan(tweet.timestamp, config.dateTo)) continue;
-    if (config.dateFrom && isOlderThan(tweet.timestamp, config.dateFrom)) continue;
 
     // Filter: include replies
     if (!config.includeReplies && tweet.is_reply) continue;
@@ -215,11 +239,13 @@ function extractTweetsFromDOM() {
 
 // ── Date Comparison Helpers ──────────────────────────
 // Tweets on profile page are newest-first.
+// timestamp: ISO string or null.  dateStr: 'YYYY-MM-DD'
 
 function isOlderThan(timestamp, dateStr) {
   if (!timestamp || !dateStr) return false;
   try {
     var tweetDate = new Date(timestamp);
+    if (isNaN(tweetDate.getTime())) return false;
     var limit = new Date(dateStr + 'T00:00:00Z');
     return tweetDate < limit;
   } catch (_) {
@@ -231,7 +257,8 @@ function isNewerThan(timestamp, dateStr) {
   if (!timestamp || !dateStr) return false;
   try {
     var tweetDate = new Date(timestamp);
-    var limit = new Date(dateStr + 'T23:59:59Z');
+    if (isNaN(tweetDate.getTime())) return false;
+    var limit = new Date(dateStr + 'T23:59:59.999Z');
     return tweetDate > limit;
   } catch (_) {
     return false;
@@ -241,6 +268,8 @@ function isNewerThan(timestamp, dateStr) {
 // ── Auto-Scroll Logic ───────────────────────────────
 
 async function autoScroll() {
+  if (reachedDateRange || totalInRange >= MAX_TWEETS) return;
+
   var scrollY = window.scrollY;
   var maxScroll = document.body.scrollHeight - window.innerHeight;
 

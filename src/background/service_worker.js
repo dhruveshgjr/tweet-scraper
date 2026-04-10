@@ -58,7 +58,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       return false;
 
     case 'SCRAPE_COMPLETE':
-      handleScrapeComplete();
+      handleScrapeComplete(message.reason);
       sendResponse({ status: 'acknowledged' });
       return false;
 
@@ -128,8 +128,14 @@ function handleRateLimit() {
 
 // ── Handler: Scrape Complete ─────────────────────────
 
-function handleScrapeComplete() {
-  console.log('[ServiceWorker] Scrape complete. Total:', sessionState.totalCaptured);
+function handleScrapeComplete(reason) {
+  var reasonText = '';
+  if (reason === 'date_range') {
+    reasonText = ' (date range limit reached — stopped early)';
+  } else if (reason === 'hard_cap') {
+    reasonText = ' (10k hard cap reached — stopped early)';
+  }
+  console.log('[ServiceWorker] Scrape complete.' + reasonText + ' Total captured:', sessionState.totalCaptured, '| dateFrom:', sessionState.dateFrom, '| dateTo:', sessionState.dateTo);
   sessionState.isRunning = false;
 
   triggerCSVDownload();

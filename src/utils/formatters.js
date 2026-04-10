@@ -10,14 +10,40 @@
 // ── Date Parsing ─────────────────────────────────────
 
 function parseXTimestamp(timeElement) {
-  if (!timeElement) return '';
-  const dt = timeElement.getAttribute('datetime');
-  if (!dt) return '';
-  try {
-    return new Date(dt).toISOString();
-  } catch (_) {
-    return dt;
+  if (!timeElement) return null;
+  var dt = timeElement.getAttribute('datetime');
+  if (!dt || typeof dt !== 'string') return null;
+
+  var d = tryParseDate(dt);
+  if (d && !isNaN(d.getTime())) {
+    return d.toISOString();
   }
+
+  return null;
+}
+
+function tryParseDate(dt) {
+  var d = new Date(dt);
+  if (!isNaN(d.getTime())) return d;
+
+  var m;
+
+  m = dt.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) {
+    return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
+  }
+
+  m = dt.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  if (m) {
+    return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10), parseInt(m[4], 10), parseInt(m[5], 10), parseInt(m[6], 10)));
+  }
+
+  m = dt.match(/(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if (m) {
+    return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10), parseInt(m[4], 10), parseInt(m[5], 10), m[6] ? parseInt(m[6], 10) : 0));
+  }
+
+  return null;
 }
 
 // ── Date Formatting for Search URLs ──────────────────
@@ -90,7 +116,7 @@ function parseTweet(article) {
   if (!tweetId) return null;
 
   // ── timestamp ──────────────────────────────────────
-  var timestamp = timeEl ? parseXTimestamp(timeEl) : '';
+  var timestamp = timeEl ? parseXTimestamp(timeEl) : null;
 
   // ── full_text & language ───────────────────────────
   var tweetTextEl = article.querySelector('[data-testid="tweetText"]');
