@@ -576,3 +576,100 @@ body.running .btn-ghost {
   opacity: 0.5;
   pointer-events: none;
 }
+
+body.paused .input-group input,
+body.paused .toggle,
+body.paused .btn-ghost {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ── Paused state pulse ──────────────────────────── */
+
+body.paused .progress-bar-fill {
+  animation: none;
+  background: var(--accent-amber);
+}
+
+body.paused .progress-bar-glow {
+  box-shadow: none;
+}
+
+body.paused .progress-status {
+  color: var(--accent-amber);
+}
+
+body.paused .progress-status::before {
+  background: var(--accent-amber);
+  animation: none;
+}
+
+/* ── Actions Resume Row ──────────────────────────── */
+
+.actions-resume {
+  display: flex;
+}
+
+.btn-resume {
+  flex: 1;
+  padding: 11px 16px;
+  border: 2px solid var(--accent-blue);
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-blue);
+  font-size: 14px;
+  font-weight: 700;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  letter-spacing: 0.2px;
+}
+
+.btn-resume:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-resume:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-resume:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Open CSV Button ─────────────────────────────── */
+
+.btn-open-csv {
+  display: none;
+  width: 100%;
+  padding: 10px 16px;
+  border: 1px solid var(--accent-green);
+  border-radius: var(--radius-md);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--accent-green);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-open-csv:hover {
+  background: rgba(16, 185, 129, 0.15);
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.2);
+  transform: translateY(-1px);
+}
+
+.btn-open-csv:active {
+  transform: translateY(0);
+}

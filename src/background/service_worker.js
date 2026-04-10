@@ -13,6 +13,8 @@ import { tweetsToCSV, createCSVBlob } from '../utils/csv_exporter.js';
 // ── Session State ────────────────────────────────────
 var sessionState = {
   isRunning: false,
+  isPaused: false,
+  stopReason: '',
   username: '',
   dateFrom: null,
   dateTo: null,
@@ -22,7 +24,8 @@ var sessionState = {
   tweets: [],
   totalCaptured: 0,
   estimatedTotal: 10000,
-  activeTabId: null
+  activeTabId: null,
+  lastDownloadId: null
 };
 
 // ── Message Router ───────────────────────────────────
@@ -38,12 +41,19 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       handleStopExport(sendResponse);
       return true;
 
+    case 'RESUME_EXPORT':
+      handleResumeExport(sendResponse);
+      return true;
+
     case 'GET_STATUS':
       sendResponse({
         isRunning: sessionState.isRunning,
+        isPaused: sessionState.isPaused,
         username: sessionState.username,
         totalCaptured: sessionState.totalCaptured,
-        estimatedTotal: sessionState.estimatedTotal
+        estimatedTotal: sessionState.estimatedTotal,
+        stopReason: sessionState.stopReason,
+        lastDownloadId: sessionState.lastDownloadId
       });
       return false;
 
@@ -53,7 +63,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       return false;
 
     case 'RATE_LIMIT':
-      handleRateLimit();
+      handleRateLimit(message.reason);
       sendResponse({ status: 'acknowledged' });
       return false;
 
@@ -61,6 +71,10 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       handleScrapeComplete(message.reason);
       sendResponse({ status: 'acknowledged' });
       return false;
+
+    case 'OPEN_CSV':
+      handleOpenCSV(sendResponse);
+      return true;
 
     default:
       sendResponse({ status: 'unknown_type' });
@@ -72,6 +86,8 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
 function handleStartExport(config, sendResponse) {
   sessionState.isRunning = true;
+  sessionState.isPaused = false;
+  sessionState.stopReason = '';
   sessionState.username = config.username;
   sessionState.dateFrom = config.dateFrom;
   sessionState.dateTo = config.dateTo;
@@ -81,9 +97,11 @@ function handleStartExport(config, sendResponse) {
   sessionState.tweets = [];
   sessionState.totalCaptured = 0;
   sessionState.estimatedTotal = 10000;
+  sessionState.lastDownloadId = null;
 
   console.log('[ServiceWorker] Export started for @' + config.username, config);
 
+  saveLastConfig(config);
   startExtraction(config);
 
   sendResponse({ status: 'started' });
@@ -92,12 +110,44 @@ function handleStartExport(config, sendResponse) {
 // ── Handler: Stop Export ─────────────────────────────
 
 function handleStopExport(sendResponse) {
-  console.log('[ServiceWorker] Export stopped. Total captured:', sessionState.totalCaptured);
+  console.log('[ServiceWorker] Export stopped by user. Total captured:', sessionState.totalCaptured);
 
   stopExtraction();
   sessionState.isRunning = false;
+  sessionState.isPaused = false;
+  sessionState.stopReason = 'user_stop';
+
+  broadcastToPopup({
+    type: 'EXPORT_STOPPING',
+    totalCaptured: sessionState.totalCaptured
+  });
+
+  if (sessionState.tweets.length > 0) {
+    triggerCSVDownload();
+  }
 
   sendResponse({ status: 'stopped', totalCaptured: sessionState.totalCaptured });
+}
+
+// ── Handler: Resume Export ────────────────────────────
+
+function handleResumeExport(sendResponse) {
+  if (!sessionState.isPaused) {
+    sendResponse({ status: 'not_paused' });
+    return;
+  }
+
+  console.log('[ServiceWorker] Resuming export for @' + sessionState.username);
+  sessionState.isPaused = false;
+  sessionState.isRunning = true;
+  sessionState.stopReason = '';
+
+  if (sessionState.activeTabId) {
+    chrome.tabs.sendMessage(sessionState.activeTabId, { type: 'resume-scraping' }).catch(function () {});
+  }
+
+  broadcastToPopup({ type: 'PROGRESS_UPDATE', totalCaptured: sessionState.totalCaptured, estimatedTotal: sessionState.estimatedTotal });
+  sendResponse({ status: 'resumed' });
 }
 
 // ── Handler: Tweet Batch ─────────────────────────────
@@ -115,15 +165,20 @@ function handleTweetBatch(tweets) {
 
 // ── Handler: Rate Limit ──────────────────────────────
 
-function handleRateLimit() {
-  console.warn('[ServiceWorker] Rate limit detected — extraction paused');
-  sessionState.isRunning = false;
+function handleRateLimit(reason) {
+  console.warn('[ServiceWorker] Rate limit detected —', reason, '| Pausing extraction');
+  sessionState.isPaused = true;
+  sessionState.stopReason = 'rate_limit';
 
   if (sessionState.activeTabId) {
-    chrome.tabs.sendMessage(sessionState.activeTabId, { type: 'stop-scraping' }).catch(function () {});
+    chrome.tabs.sendMessage(sessionState.activeTabId, { type: 'pause-scraping' }).catch(function () {});
   }
 
-  broadcastToPopup({ type: 'RATE_LIMIT' });
+  broadcastToPopup({
+    type: 'RATE_LIMIT',
+    reason: reason || 'rate_limit',
+    totalCaptured: sessionState.totalCaptured
+  });
 }
 
 // ── Handler: Scrape Complete ─────────────────────────
@@ -131,19 +186,33 @@ function handleRateLimit() {
 function handleScrapeComplete(reason) {
   var reasonText = '';
   if (reason === 'date_range') {
-    reasonText = ' (date range limit reached — stopped early)';
+    reasonText = ' (date range limit reached)';
   } else if (reason === 'hard_cap') {
-    reasonText = ' (10k hard cap reached — stopped early)';
+    reasonText = ' (10k hard cap reached)';
   }
   console.log('[ServiceWorker] Scrape complete.' + reasonText + ' Total captured:', sessionState.totalCaptured, '| dateFrom:', sessionState.dateFrom, '| dateTo:', sessionState.dateTo);
   sessionState.isRunning = false;
+  sessionState.isPaused = false;
+  sessionState.stopReason = reason || 'complete';
 
   triggerCSVDownload();
 
   broadcastToPopup({
     type: 'EXPORT_COMPLETE',
+    reason: reason || 'complete',
     totalCaptured: sessionState.totalCaptured
   });
+}
+
+// ── Handler: Open CSV ────────────────────────────────
+
+function handleOpenCSV(sendResponse) {
+  if (sessionState.lastDownloadId) {
+    chrome.downloads.show(sessionState.lastDownloadId);
+    sendResponse({ status: 'opened' });
+  } else {
+    sendResponse({ status: 'no_download' });
+  }
 }
 
 // ── Real Extraction Orchestration ────────────────────
@@ -152,7 +221,6 @@ async function startExtraction(config) {
   var url = 'https://x.com/' + encodeURIComponent(config.username.replace(/^@/, ''));
 
   try {
-    // Find or create an x.com tab
     var tabs = await chrome.tabs.query({ url: 'https://x.com/*' });
     var tab;
 
@@ -165,16 +233,11 @@ async function startExtraction(config) {
 
     sessionState.activeTabId = tab.id;
 
-    // Wait for the page to finish loading
     await waitForTabLoad(tab.id);
-
-    // Extra delay for content scripts to initialize
     await sleep(2000);
 
-    // Initialize the mutation observer
     await sendMessageToTab(tab.id, { type: 'init-observer' });
 
-    // Start scraping with config
     await sendMessageToTab(tab.id, {
       type: 'start-scraping',
       config: {
@@ -202,12 +265,6 @@ function stopExtraction() {
   if (sessionState.activeTabId) {
     chrome.tabs.sendMessage(sessionState.activeTabId, { type: 'stop-scraping' }).catch(function () {});
     chrome.tabs.sendMessage(sessionState.activeTabId, { type: 'stop-observer' }).catch(function () {});
-    sessionState.activeTabId = null;
-  }
-
-  // Download whatever we have so far
-  if (sessionState.tweets.length > 0) {
-    triggerCSVDownload();
   }
 }
 
@@ -222,8 +279,6 @@ function waitForTabLoad(tabId) {
       }
     }
     chrome.tabs.onUpdated.addListener(listener);
-
-    // Timeout after 30 seconds
     setTimeout(function () {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
@@ -258,6 +313,7 @@ function sleep(ms) {
 function triggerCSVDownload() {
   if (sessionState.tweets.length === 0) {
     console.warn('[ServiceWorker] No tweets to export');
+    broadcastToPopup({ type: 'EXPORT_COMPLETE', reason: 'no_data', totalCaptured: 0 });
     return;
   }
 
@@ -266,7 +322,9 @@ function triggerCSVDownload() {
     var blobContent = createCSVBlob(csvString);
     var dataUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent(blobContent);
 
-    var filename = sessionState.username + '_tweets_' + new Date().toISOString().slice(0, 10) + '.csv';
+    var df = sessionState.dateFrom || 'unknown';
+    var dt = sessionState.dateTo || 'unknown';
+    var filename = sessionState.username + '_tweets_' + df + '_to_' + dt + '.csv';
 
     chrome.downloads.download({
       url: dataUrl,
@@ -274,6 +332,14 @@ function triggerCSVDownload() {
       saveAs: true
     }).then(function (downloadId) {
       console.log('[ServiceWorker] CSV download started, id:', downloadId, 'filename:', filename);
+      sessionState.lastDownloadId = downloadId;
+
+      broadcastToPopup({
+        type: 'DOWNLOAD_READY',
+        downloadId: downloadId,
+        filename: filename,
+        totalCaptured: sessionState.totalCaptured
+      });
     }).catch(function (e) {
       console.error('[ServiceWorker] CSV download failed:', e);
     });
@@ -295,4 +361,21 @@ function broadcastProgress() {
 
 function broadcastToPopup(message) {
   chrome.runtime.sendMessage(message).catch(function () {});
+}
+
+// ── Persistent Config (chrome.storage.local) ────────
+
+function saveLastConfig(config) {
+  try {
+    chrome.storage.local.set({
+      lastConfig: {
+        username: config.username,
+        dateFrom: config.dateFrom,
+        dateTo: config.dateTo,
+        includeReplies: config.includeReplies,
+        onlyMedia: config.onlyMedia,
+        exportAll: config.exportAll
+      }
+    });
+  } catch (_) {}
 }

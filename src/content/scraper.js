@@ -64,6 +64,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
     case 'resume-scraping':
       isPaused = false;
+      console.log('[Scraper] Resumed from pause');
       sendResponse({ status: 'scraping-resumed' });
       break;
 
@@ -135,10 +136,12 @@ async function startScrapeLoop() {
     }
 
     // 5. Check for rate limit / CAPTCHA
-    if (detectRateLimitOrCaptcha()) {
-      console.warn('[Scraper] Rate limit or CAPTCHA detected — stopping');
-      isExtracting = false;
-      chrome.runtime.sendMessage({ type: 'RATE_LIMIT' });
+    var rateLimitDetected = detectRateLimitOrCaptcha();
+    if (rateLimitDetected) {
+      console.warn('[Scraper] Rate limit or CAPTCHA detected — pausing');
+      isPaused = true;
+      chrome.runtime.sendMessage({ type: 'RATE_LIMIT', reason: rateLimitDetected });
+      broadcastScrapeStatus('rate_limited');
       break;
     }
 
@@ -310,21 +313,22 @@ function sendBatchToBackground(tweets) {
 // ── Rate Limit / CAPTCHA Detection ───────────────────
 
 function detectRateLimitOrCaptcha() {
-  // Check for rate limit banners
   var rateLimitEl = document.querySelector('[data-testid="toast"] span');
   if (rateLimitEl) {
     var text = rateLimitEl.textContent || '';
     if (text.indexOf('rate limit') !== -1 || text.indexOf('try again') !== -1) {
-      return true;
+      return 'rate_limit';
     }
   }
 
-  // Check for generic error banners
   var errorBanners = document.querySelectorAll('[role="alert"]');
   for (var i = 0; i < errorBanners.length; i++) {
     var alertText = errorBanners[i].textContent || '';
-    if (alertText.indexOf('rate limit') !== -1 || alertText.indexOf('temporarily locked') !== -1) {
-      return true;
+    if (alertText.indexOf('rate limit') !== -1) {
+      return 'rate_limit';
+    }
+    if (alertText.indexOf('temporarily locked') !== -1 || alertText.indexOf('temporarily restricted') !== -1) {
+      return 'locked';
     }
   }
 
@@ -348,4 +352,12 @@ function isEndOfFeed() {
   if (scrollStallCount >= MAX_STALL_SCROLLS) return true;
 
   return false;
+}
+
+// ── Status Broadcast Helper ────────────────────────────
+
+function broadcastScrapeStatus(status) {
+  try {
+    chrome.runtime.sendMessage({ type: 'SCRAPE_STATUS', status: status });
+  } catch (_) {}
 }

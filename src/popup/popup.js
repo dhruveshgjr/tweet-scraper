@@ -5,11 +5,11 @@
  *
  * Responsible for:
  * - Reading user inputs (username, date range, toggles)
- * - Sending "START_EXPORT" / "STOP_EXPORT" messages to the background service worker
- * - Listening for progress updates and rendering the progress bar + tweet counter
+ * - Sending START_EXPORT / STOP_EXPORT / RESUME_EXPORT messages
+ * - Listening for progress, rate-limit, and completion events
  * - Enabling/disabling buttons based on export state
- *
- * See SPEC.md section 4 (Popup UI) for full requirements.
+ * - Restoring last config from chrome.storage.local on popup open
+ * - Showing "Open CSV" button after successful download
  */
 
 // ── DOM References ───────────────────────────────────
@@ -21,6 +21,8 @@ const onlyMedia       = document.getElementById('only-media');
 const btnExportAll    = document.getElementById('btn-export-all');
 const btnStart        = document.getElementById('btn-start');
 const btnStop         = document.getElementById('btn-stop');
+const btnResume       = document.getElementById('btn-resume');
+const btnOpenCSV      = document.getElementById('btn-open-csv');
 const progressSection = document.getElementById('progress-section');
 const progressBar     = document.getElementById('progress-bar');
 const progressBarGlow = document.getElementById('progress-bar-glow');
@@ -28,9 +30,12 @@ const progressText    = document.getElementById('progress-text');
 const progressStatus  = document.getElementById('progress-status');
 const progressPercent = document.getElementById('progress-percent');
 const statusMessage   = document.getElementById('status-message');
+const actionsResume   = document.getElementById('actions-resume');
 
 // ── State ────────────────────────────────────────────
 let isRunning = false;
+let isPaused = false;
+let lastDownloadId = null;
 
 // ── Helper: Format number with commas ────────────────
 function formatNumber(n) {
@@ -43,13 +48,13 @@ function setDefaultDates() {
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-  // Format as YYYY-MM-DD for the date input
   dateToInput.value = today.toISOString().split('T')[0];
   dateFromInput.value = sixMonthsAgo.toISOString().split('T')[0];
 }
 
 // ── Helper: Show status message with type ────────────
-function showStatus(text, type = 'info') {
+function showStatus(text, type) {
+  type = type || 'info';
   statusMessage.textContent = text;
   statusMessage.className = 'status-message ' + type;
 }
@@ -67,25 +72,47 @@ function updateProgress(captured, estimated) {
   progressBar.style.width = percent + '%';
   progressBarGlow.style.width = percent + '%';
   progressPercent.textContent = percent + '%';
-  progressText.textContent = `Extracted ${formatNumber(captured)} / ~${formatNumber(estimated)}`;
+  progressText.textContent = 'Extracted ' + formatNumber(captured) + ' / ~' + formatNumber(estimated);
 }
 
 // ── Helper: Set running/idle UI state ────────────────
 function setRunningState(running) {
   isRunning = running;
+  isPaused = false;
 
   if (running) {
     document.body.classList.add('running');
+    document.body.classList.remove('paused');
     btnStart.disabled = true;
     btnStop.disabled = false;
+    btnResume.disabled = true;
     progressSection.classList.add('visible');
     progressStatus.textContent = 'Extracting…';
+    btnOpenCSV.style.display = 'none';
+    actionsResume.style.display = 'none';
     clearStatus();
   } else {
     document.body.classList.remove('running');
+    document.body.classList.remove('paused');
     btnStart.disabled = false;
     btnStop.disabled = true;
+    btnResume.disabled = true;
+    actionsResume.style.display = 'none';
   }
+}
+
+// ── Helper: Set paused UI state ──────────────────────
+function setPausedState() {
+  isPaused = true;
+  isRunning = true;
+
+  document.body.classList.add('running');
+  document.body.classList.add('paused');
+  btnStart.disabled = true;
+  btnStop.disabled = true;
+  btnResume.disabled = false;
+  actionsResume.style.display = 'flex';
+  progressStatus.textContent = 'Paused';
 }
 
 // ── Helper: Reset progress to zero ───────────────────
@@ -141,7 +168,6 @@ btnStart.addEventListener('click', () => {
   resetProgress();
   setRunningState(true);
 
-  // Send to background service worker
   chrome.runtime.sendMessage({
     type: 'START_EXPORT',
     config: config
@@ -159,16 +185,67 @@ btnStart.addEventListener('click', () => {
 
 // ── Event: Stop Export ───────────────────────────────
 btnStop.addEventListener('click', () => {
+  btnStop.disabled = true;
+  btnStop.textContent = 'Stopping…';
+
   chrome.runtime.sendMessage({
     type: 'STOP_EXPORT'
   }, (response) => {
     if (chrome.runtime.lastError) {
       showStatus('Error stopping export', 'error');
+      setRunningState(false);
+      btnStop.innerHTML = '<span class="btn-icon">■</span> Stop';
       return;
     }
+
+    const captured = (response && response.totalCaptured) || 0;
     setRunningState(false);
     progressStatus.textContent = 'Stopped';
-    showStatus('Export stopped — CSV will download shortly', 'warning');
+    showStatus('Export stopped — ' + formatNumber(captured) + ' tweets captured. CSV downloading…', 'warning');
+    btnStop.innerHTML = '<span class="btn-icon">■</span> Stop';
+  });
+});
+
+// ── Event: Resume Export ────────────────────────────
+btnResume.addEventListener('click', () => {
+  btnResume.disabled = true;
+  btnResume.textContent = 'Resuming…';
+
+  chrome.runtime.sendMessage({
+    type: 'RESUME_EXPORT'
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      showStatus('Error resuming export', 'error');
+      btnResume.disabled = false;
+      btnResume.innerHTML = '<span class="btn-icon">▶</span> Resume Export';
+      return;
+    }
+
+    if (response && response.status === 'resumed') {
+      isRunning = true;
+      isPaused = false;
+      document.body.classList.add('running');
+      document.body.classList.remove('paused');
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      btnResume.disabled = true;
+      actionsResume.style.display = 'none';
+      progressStatus.textContent = 'Extracting…';
+      clearStatus();
+    } else {
+      showStatus('Cannot resume — no paused export found', 'error');
+      btnResume.disabled = false;
+      btnResume.innerHTML = '<span class="btn-icon">▶</span> Resume Export';
+    }
+  });
+});
+
+// ── Event: Open CSV ─────────────────────────────────
+btnOpenCSV.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'OPEN_CSV' }, (response) => {
+    if (chrome.runtime.lastError) {
+      showStatus('Could not open CSV file', 'error');
+    }
   });
 });
 
@@ -177,13 +254,11 @@ btnExportAll.addEventListener('click', () => {
   const isActive = btnExportAll.classList.toggle('active');
 
   if (isActive) {
-    // Clear date range restriction — export everything
-    dateFromInput.value = '2006-03-21'; // Twitter's founding date
+    dateFromInput.value = '2006-03-21';
     dateToInput.value = new Date().toISOString().split('T')[0];
     includeReplies.checked = true;
     showStatus('Will export all available tweets', 'info');
   } else {
-    // Reset to default 6 months
     setDefaultDates();
     includeReplies.checked = false;
     clearStatus();
@@ -197,17 +272,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       updateProgress(message.totalCaptured, message.estimatedTotal);
       break;
 
-    case 'EXPORT_COMPLETE':
+    case 'EXPORT_COMPLETE': {
+      const reason = message.reason || 'complete';
+      const captured = message.totalCaptured || 0;
+
       setRunningState(false);
-      progressStatus.textContent = 'Complete!';
-      progressPercent.textContent = '100%';
       progressBar.style.width = '100%';
       progressBarGlow.style.width = '100%';
-      showStatus(
-        `✓ Exported ${formatNumber(message.totalCaptured)} tweets successfully`,
-        'success'
-      );
+      progressPercent.textContent = '100%';
+
+      let statusText = '';
+      let statusType = 'success';
+
+      if (reason === 'date_range') {
+        statusText = 'Done — ' + formatNumber(captured) + ' tweets captured (date range reached)';
+        progressStatus.textContent = 'Date range complete';
+      } else if (reason === 'hard_cap') {
+        statusText = 'Done — ' + formatNumber(captured) + ' tweets captured (10k cap reached)';
+        progressStatus.textContent = '10k cap reached';
+      } else if (reason === 'no_data') {
+        statusText = 'No tweets found for this account/date range';
+        progressStatus.textContent = 'No data';
+        statusType = 'warning';
+      } else {
+        statusText = 'Exported ' + formatNumber(captured) + ' tweets successfully';
+        progressStatus.textContent = 'Complete!';
+      }
+
+      showStatus(statusText, statusType);
+
+      if (message.totalCaptured > 0) {
+        btnOpenCSV.style.display = 'flex';
+      }
       break;
+    }
+
+    case 'DOWNLOAD_READY': {
+      lastDownloadId = message.downloadId;
+      btnOpenCSV.style.display = 'flex';
+      const captured = message.totalCaptured || 0;
+      if (!isRunning) {
+        showStatus('CSV downloaded — ' + formatNumber(captured) + ' tweets', 'success');
+      }
+      break;
+    }
+
+    case 'EXPORT_STOPPING': {
+      const captured = message.totalCaptured || 0;
+      showStatus('Stopping… ' + formatNumber(captured) + ' tweets captured so far', 'warning');
+      break;
+    }
 
     case 'EXPORT_ERROR':
       setRunningState(false);
@@ -215,13 +329,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       showStatus(message.error || 'An error occurred during export', 'error');
       break;
 
-    case 'RATE_LIMIT':
-      progressStatus.textContent = 'Rate Limited';
-      showStatus(
-        '⚠ Rate limit detected — extraction paused. Please wait.',
-        'warning'
-      );
+    case 'RATE_LIMIT': {
+      const reason = message.reason || 'rate_limit';
+      const captured = message.totalCaptured || 0;
+
+      setPausedState();
+
+      if (reason === 'locked') {
+        showStatus('Account temporarily locked — export paused. ' + formatNumber(captured) + ' tweets saved.', 'error');
+      } else {
+        showStatus('Rate limit detected — export paused after ' + formatNumber(captured) + ' tweets. Click Resume when ready.', 'warning');
+      }
       break;
+    }
   }
 });
 
@@ -229,14 +349,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 function initPopup() {
   setDefaultDates();
 
-  // Check if an export is already running in the background
+  // Restore last config from storage
+  chrome.storage.local.get('lastConfig', (result) => {
+    if (result.lastConfig) {
+      const cfg = result.lastConfig;
+      if (cfg.username) usernameInput.value = cfg.username;
+      if (cfg.dateFrom) dateFromInput.value = cfg.dateFrom;
+      if (cfg.dateTo) dateToInput.value = cfg.dateTo;
+      if (cfg.includeReplies) includeReplies.checked = true;
+      if (cfg.onlyMedia) onlyMedia.checked = true;
+      if (cfg.exportAll) {
+        btnExportAll.classList.add('active');
+      }
+    }
+  });
+
+  // Check if an export is already running or paused in the background
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
     if (chrome.runtime.lastError) return;
 
-    if (response && response.isRunning) {
-      setRunningState(true);
-      usernameInput.value = response.username || '';
-      updateProgress(response.totalCaptured || 0, response.estimatedTotal || 10000);
+    if (response) {
+      if (response.isPaused) {
+        setPausedState();
+        updateProgress(response.totalCaptured || 0, response.estimatedTotal || 10000);
+        if (response.username) usernameInput.value = response.username;
+        showStatus('Export paused — click Resume to continue', 'warning');
+      } else if (response.isRunning) {
+        setRunningState(true);
+        if (response.username) usernameInput.value = response.username;
+        updateProgress(response.totalCaptured || 0, response.estimatedTotal || 10000);
+      }
+
+      if (response.lastDownloadId) {
+        lastDownloadId = response.lastDownloadId;
+        btnOpenCSV.style.display = 'flex';
+      }
     }
   });
 }

@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "X Tweet Exporter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Export up to ~10,000 recent tweets from any public X (Twitter) account to a clean CSV file. Zero external servers.",
 
   "permissions": [
     "tabs",
     "activeTab",
     "scripting",
-    "downloads"
+    "downloads",
+    "storage"
   ],
 
   "host_permissions": [
